@@ -1,0 +1,372 @@
+<html>
+  <head>
+
+    <script src="https://sdk.symbl.ai/js/beta/symbl-web-sdk/v1.0.5/symbl.min.js">
+       // https://platform.symbl.ai/#/home
+       // https://platform.symbl.ai/#/explorer/transcription
+       // https://docs.symbl.ai/docs/sending-external-audio-streams
+       // https://github.com/deepgram-devs/node-live-example/blob/main/public/client.js
+
+       // Note that transcription needs access to mic via the browser, so if this is loaded behind HTTP, read the following:
+       // --- https://stackoverflow.com/questions/60957829/navigator-mediadevices-is-undefined
+       //     chrome://flags/#unsafely-treat-insecure-origin-as-secure
+       // That is, we need to add 192.168.1.240:7778 to allow getUserMedia to access mic and do transcription
+    </script>
+      
+    <script>
+      let symbl;
+      let stream;
+      let context;
+      let sourceNode;
+      let audioStream;
+      let connection;
+
+      let first_greeting = "Hi";
+
+      function onLoad() {
+        var user = "{{user}}";
+        var text = "{{message}}";
+        initialize( user, text );
+
+        first_greeting = text;
+        
+        document.getElementById('submit_button').setAttribute("disabled","disabled");
+        document.getElementById('stop_button').setAttribute("disabled","disabled");
+        document.getElementById('pause_button').setAttribute("disabled","disabled");
+
+        var canvas = document.getElementById('myCanvas');
+        canvas.loaded_image = false
+      }
+      
+      function initialize( user, text ) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/initialize", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+          
+    	document.getElementById("in_progress").style.display="block"; 
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+			document.getElementById("in_progress").style.display="none"; 
+
+            console.log("...returning from sending data:" + text);
+            var response = JSON.parse(xhr.responseText);
+
+            //document.getElementById("input_text").value = response.response;
+            var video = document.getElementById("video_player");
+            video.src = {{url_for('static', filename='')}} + "/" + response.video_file 
+            video.load();
+            
+            console.log("...finished processing response...");
+          }
+        };
+        
+        xhr.send(JSON.stringify({user: user, text: text}));
+        console.log("...initializing assistant: " + text);
+      }
+
+      function chat_think(user, text) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/chat_think", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+          
+    	document.getElementById("in_progress").style.display="block"; 
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+			document.getElementById("in_progress").style.display="none"; 
+
+            console.log("...returning from sending chat ..." + text);
+            var response = JSON.parse(xhr.responseText);
+
+            var video = document.getElementById("video_player");
+            video.src = {{url_for('static', filename='')}} + "/" + response.video_file 
+            console.log("...preparing to play video...");
+
+            video.load();
+            video.play();
+
+            if( response.image_prompt != "" ) generate_image( response.image_prompt )
+
+            console.log("...finished processing response...");
+
+            think_reply(user, text);
+          
+          }
+        };
+
+        var imgData = ""
+        var canvas = document.getElementById("myCanvas");
+        if ( canvas.loaded_image == true ) { 
+            // get the encoded image data from the canvas as a PNG
+            imgData = canvas.toDataURL("image/png")
+            canvas.loaded_image = false
+        }
+        
+        xhr.send(JSON.stringify({user: user, text: text, image: imgData}));
+        console.log("...sending chat ..." + text);
+      }
+
+      function think_reply(user, text) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/think_reply", true);
+        xhr.setRequestHeader("Content-Type", "application/json");
+        
+    	document.getElementById("in_progress").style.display="block";
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState === XMLHttpRequest.DONE && xhr.status === 200) {
+			document.getElementById("in_progress").style.display="none"; 
+
+            console.log("...returning from sending chat ..." + text);
+            var response = JSON.parse(xhr.responseText);
+              
+            document.getElementById("output_text").value = response.response;
+            
+            var video = document.getElementById("video_player");
+            video.src = {{url_for('static', filename='')}} + "/" + response.video_file 
+            console.log("...preparing to play video...");
+
+            video.load();
+            video.play();
+
+            if( response.image_prompt != "" ) {
+                load_image( user, response.image_prompt);
+            }
+
+            console.log("...finished processing response...");
+          }
+        };
+        
+        xhr.send(JSON.stringify({user: user, text: text}));
+        console.log("...sending chat ..." + text);
+      }
+
+      function startApp() {
+        document.getElementById('submit_button').removeAttribute("disabled");
+        document.getElementById('stop_button').removeAttribute("disabled");
+        document.getElementById('pause_button').removeAttribute("disabled");
+        document.getElementById("start_button").setAttribute("disabled","disabled");
+
+        var video = document.getElementById("video_player");
+        video.play();
+
+        document.getElementById("output_text").value = first_greeting
+        document.getElementById("input_text").focus();
+      }
+        
+      function onSubmit() {
+        var user = "{{user}}";
+        var text = document.getElementById("input_text").value;
+        chat_think(user, text);
+      }
+
+      // Fetch an image used for user conversation ...
+      function load_image(user, image_file_url) {
+
+        var canvas = document.getElementById("myCanvas");
+        var ctx = canvas.getContext("2d");
+          
+        // Create a new image object and set its source to the blob URL
+        var image = new Image();              
+        image.src = image_file_url;
+
+        // When the image is loaded, draw it onto the canvas
+        image.onload = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(image, 0, 0);
+        };
+      }
+
+      function startAudioStream() {
+          
+          // WARNING: The appID and appSecret will be exposed on the client side so this needs to be mitigated
+          symbl = new Symbl({appId: {{speech2text_app_id|safe}}, appSecret: {{speech2text_app_secret|safe}},});
+    
+          // Boilerplate code for creating a new AudioContext and MediaStreamAudioSourceNode
+          navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+          .then(stream_parm => {
+             stream = stream_parm;
+              
+             // Handle the stream
+             const sampleRate = stream.getAudioTracks()[0].getSettings().sampleRate;
+             context = new AudioContext({ sampleRate });
+             sourceNode = context.createMediaStreamSource(stream);
+    
+             // Creating a new AudioStream
+             audioStream = new LINEAR16AudioStream(sourceNode);
+    
+             // Open a Symbl Streaming API WebSocket Connection.
+             symbl.createAndStartNewConnection({
+                insightTypes: ["question", "action_item", "follow_up"],
+                config: {
+                  encoding: "LINEAR16",
+                  sampleRateHertz: sampleRate
+                }
+             }, audioStream)
+             .then(connection_parm => {
+                connection = connection_parm;
+                 
+                // Retrieve real-time transcription from the conversation
+                connection.on("speech_recognition", (speechData) => {
+                    const { punctuated } = speechData;
+                    const name = speechData.user ? speechData.user.name : "User";
+            
+                    // submit the transcript over ...
+                    if( speechData.isFinal ) {
+                       var user = "{{user}}";
+                       var text = punctuated.transcript;
+                       console.log(`${name}: `, text);
+                       document.getElementById("input_text").value = text;
+                       //chat_think(user, text);
+                    }
+                    else {
+                       var text = punctuated.transcript;
+                       document.getElementById("input_text").value = text;
+                    }
+                });
+                  
+                connection.on("message", (data) => {
+            		  // Handle data here.
+            		  //console.log(data);
+            	});
+    
+                // Stops processing audio, but keeps the WebSocket connection open.
+                //connection.stopProcessing();
+                  
+                // Closes the WebSocket connection.
+                //connection.disconnect();
+                 
+             })
+             .catch(error => {
+             });
+              
+          })
+          .catch(error => {          
+          });
+    
+      } // function startAudioStream()
+
+      function stopAudioStream() {
+          if (stream && context && sourceNode && audioStream) {
+              
+              connection.stopProcessing();
+              connection.disconnect();
+              
+              sourceNode.disconnect();
+              context.close();
+              stream.getTracks().forEach(track => track.stop());
+              console.log("... stopped mic and streaming ...");
+              
+          }
+      } // function stopAudioStream()
+
+      var micNTranscriptionToggle = 0;
+      function transcription() {
+          if( micNTranscriptionToggle==0 ) {
+              micNTranscriptionToggle = 1;
+              startAudioStream()
+              document.getElementById('stop_button').innerHTML = "Stop Transcription";
+          }
+          else {
+              micNTranscriptionToggle = 0;
+              stopAudioStream();
+              document.getElementById('stop_button').innerHTML = "Start Transcription";
+          }
+      }
+
+      var videoPlayPauseToggle = 0;
+      function pause() {
+        if( videoPlayPauseToggle==0 ){
+            videoPlayPauseToggle=1;
+            var video = document.getElementById("video_player");
+            video.pause();
+            document.getElementById('pause_button').innerHTML = "Play Video";
+        }
+        else {
+            videoPlayPauseToggle=0;
+            var video = document.getElementById("video_player");
+            video.play();
+            document.getElementById('pause_button').innerHTML = "Pause";
+        }
+      }
+
+    </script>
+
+      
+  </head>
+  <body onload="onLoad()">
+
+    <table><tr>
+    <td>
+
+    <table><tr>
+    <td>
+    <video id="video_player" style="width:180;height:140;margin-left:10px;">
+      <!-- <source src="{{url_for('static', filename='video.mp4')}}" type="video/mp4">  margin-left:235px; -->
+      <source src="" type="video/mp4"> 
+      Your browser does not support the video tag.
+    </video>
+    </td>
+    <td><textarea id="output_text" cols="50" rows="9" style="margin-left:-22px;"></textarea></td>
+    </tr></table>
+        
+    <table><tr>
+    <td><textarea id="input_text" cols="28" rows="18" style="margin-left:40;margin-top:3;"></textarea></td>
+    <td><div style="width:300;height:280;border:solid #A8A8A8;overflow-x:scroll;overflow-y:scroll"><canvas id="myCanvas" width="640" height="480"></canvas></div></td>
+    </tr></table>
+        
+    <button id="submit_button" onclick="onSubmit()" style="margin-left:40;margin-top:3;width:560;">Submit</button>
+    </td>
+    </tr></table>
+      
+    <table style="margin-left:40"><tr>
+        <td><button id="start_button" onclick="startApp()" style="width:184">Run Application</button></td>
+        <td><button id="stop_button" onclick="transcription()" style="width:184">Start Transcription</button></td>
+        <td><button id="pause_button" onclick="pause()" style="width:184">Pause Video</button></td>
+        <td><img id="in_progress" src="{{url_for('static', filename='inprogress.gif')}}" style="width:20px;height:20px;opacity:0.5"/></td>
+    </tr></table>
+      
+    <script>
+        
+    // Listen for paste events on the window object
+    window.addEventListener('paste', event => {
+
+      // Get a reference to the canvas element and its context
+      var canvas = document.getElementById('myCanvas');
+      var ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.loaded_image = false
+
+      // Check if the clipboard item is an image
+      const items = event.clipboardData.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf('image') !== -1) {
+            // Get the blob URL for the clipboard image
+            const blob = items[i].getAsFile();
+            const imageURL = URL.createObjectURL(blob);
+
+            // Create a new image object and set its source to the blob URL
+            var image = new Image();              
+            image.src = imageURL;
+
+            // When the image is loaded, draw it onto the canvas
+            image.onload = () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(image, 0, 0);
+                canvas.loaded_image = true
+            };
+              
+          } // end-if
+        } // end-for
+      } // end-if
+    });
+        
+    </script>
+
+    <!-- <script src="{{url_for('static', filename='script.js')}}"></script> -->
+    <script> 
+      document.getElementById("in_progress").style.display="none"; // versus block
+    </script>
+
+  </body>
+</html>
+
