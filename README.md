@@ -2,7 +2,7 @@
 #### - *Extracts PDF figures and images for analysis and conversation with LLM*
 #### - *Drive goal driven conversations using System 1 (automatic) and System2 (systematic) Planning*
 #### - *Consults external data sources for up-to-date information*
-![screenshot](System1System2_architecture.jpg)
+![screenshot](conversationalagent_architecture.jpg)
 
 This repository contains code for a generative AI driven conversational application with the following features:
 
